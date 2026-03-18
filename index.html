@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FuelTracker by FEOServices</title>
+    <!-- PWA Manifest & Offline Support -->
+    <link rel="manifest" href="manifest.json">
+    <!-- Leaflet Custom Map Dependencies -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #f8fafc; overflow: hidden; touch-action: none; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); }
+        .gauge-container { position: relative; width: 240px; height: 120px; margin: 0 auto; }
+        .gauge-svg { width: 100%; height: 100%; overflow: visible; }
+        .gauge-track { fill: none; stroke: #334155; stroke-width: 12; stroke-linecap: round; }
+        .gauge-fill { fill: none; stroke: #10b981; stroke-width: 12; stroke-linecap: round; stroke-dasharray: 283; stroke-dashoffset: 0; transition: stroke-dashoffset 0.3s ease, stroke 0.3s ease; }
+        .fuel-slider { position: absolute; top: 0; left: 0; width: 100%; height: 200%; opacity: 0; cursor: pointer; z-index: 10; transform: translateY(-25%); }
+        .animate-spin-slow { animation: spin 3s linear infinite; }
+        .animate-pulse-fast { animation: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 40px; height: 40px; }
+        
+        /* Silky Smooth Screen Transitions */
+        .screen { position: absolute; inset: 0; background-color: #0f172a; transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1), transform 0.5s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.5s; z-index: 10; }
+        .active-screen { opacity: 1; visibility: visible; transform: translateY(0) scale(1); z-index: 20; pointer-events: auto; }
+        .hide-screen { opacity: 0; visibility: hidden; transform: translateY(15px) scale(0.98); z-index: 10; pointer-events: none; }
+
+        /* Start Button Animations */
+        @keyframes borderFlow { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+        @keyframes floatLift { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+        @keyframes innerGlow { 0%, 100% { box-shadow: inset 0 0 10px rgba(16,185,129,0.2); } 50% { box-shadow: inset 0 0 20px rgba(16,185,129,0.6); } }
+        .btn-super-animated { background: linear-gradient(90deg, #0f172a, #1e293b, #0f172a); animation: floatLift 3s ease-in-out infinite, innerGlow 2s ease-in-out infinite; position: relative; }
+        .btn-super-animated::before { content: ''; position: absolute; top: -3px; left: -3px; right: -3px; bottom: -3px; border-radius: inherit; z-index: -1; background: linear-gradient(90deg, #10b981, #3b82f6, #06b6d4, #10b981); background-size: 300% 300%; animation: borderFlow 3s ease infinite, pulse 2s infinite; }
+
+        /* Loading Screen Pulse */
+        @keyframes textPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(0.98); } }
+        .loading-text { animation: textPulse 2s infinite ease-in-out; }
+
+        /* Custom Dropdown Styles */
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #1e293b; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        /* Map z-index */
+        .leaflet-container { z-index: 10; font-family: 'Inter', sans-serif; background: #0f172a; }
+    </style>
+</head>
+<body class="h-screen w-screen flex justify-center items-center bg-slate-900">
+
+    <!-- Mobile Container -->
+    <div id="app" class="w-full h-full max-w-md bg-slate-900 relative flex flex-col shadow-2xl overflow-hidden sm:rounded-3xl sm:h-[90vh] sm:border border-slate-700">
+        
+        <!-- Header -->
+        <header class="pt-8 pb-4 px-6 text-center z-50 glass-panel rounded-b-3xl absolute top-0 w-full shadow-lg pointer-events-none">
+            <h1 class="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400">FuelTracker</h1>
+            <p class="text-xs text-slate-400 font-semibold tracking-widest uppercase mt-1">by FEOServices</p>
+        </header>
+
+        <!-- Screen 1.1: Setup Fuel -->
+        <main id="screen-setup-fuel" class="screen active-screen flex-1 flex flex-col justify-center px-6 pt-24 pb-8 overflow-y-auto custom-scrollbar">
+            <div class="mb-8 text-center mt-12">
+                <h2 class="text-lg font-semibold text-slate-200 mb-6">Set Your Current Fuel</h2>
+                <div class="gauge-container">
+                    <svg viewBox="0 0 200 100" class="gauge-svg relative z-0">
+                        <path class="gauge-track" d="M 10 90 A 80 80 0 0 1 190 90" />
+                        <path id="gaugeFill" class="gauge-fill" d="M 10 90 A 80 80 0 0 1 190 90" stroke-dasharray="251.2" stroke-dashoffset="125.6" />
+                        <text x="10" y="110" fill="#64748b" font-size="14" font-weight="bold">E</text>
+                        <!-- Precise Input overlaid -->
+                        <foreignObject x="60" y="10" width="80" height="40">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="w-full h-full flex items-center justify-center">
+                                <input type="number" id="fuelInputText" value="50" min="0" max="100" class="w-full bg-transparent text-center text-slate-200 font-bold text-3xl outline-none" oninput="updateFuelVisual(this.value, 'text')">
+                            </div>
+                        </foreignObject>
+                        <text x="145" y="40" fill="#cbd5e1" font-size="18" font-weight="bold">%</text>
+                        <text x="180" y="110" fill="#64748b" font-size="14" font-weight="bold">F</text>
+                        <!-- Decorative lines -->
+                        <line x1="100" y1="90" x2="100" y2="80" stroke="#64748b" stroke-width="2" />
+                        <line x1="36" y1="36" x2="43" y2="43" stroke="#64748b" stroke-width="2" />
+                        <line x1="164" y1="36" x2="157" y2="43" stroke="#64748b" stroke-width="2" />
+                    </svg>
+                    <input type="range" id="fuelInput" class="fuel-slider" min="0" max="100" value="50" oninput="updateFuelVisual(this.value, 'slider')">
+                </div>
+            </div>
+            <div class="mt-auto pb-4">
+                <button onclick="switchScreen('screen-setup-fuel', 'screen-setup-car')" class="w-full py-4 bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-600 font-bold rounded-xl shadow-lg transition-all active:scale-95 text-lg">
+                    Next Step ➔
+                </button>
+            </div>
+        </main>
+
+        <!-- Screen 1.2: Setup Car -->
+        <main id="screen-setup-car" class="screen hide-screen flex-1 flex flex-col justify-center px-6 pt-24 pb-8 overflow-y-auto custom-scrollbar">
+            <div class="mb-auto relative z-20 mt-12">
+                <!-- Back Button -->
+                <button onclick="switchScreen('screen-setup-car', 'screen-setup-fuel')" class="w-10 h-10 mb-6 bg-slate-800 border border-slate-600 text-slate-300 hover:text-white rounded-full flex items-center justify-center shadow-lg transition-all active:scale-90">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                </button>
+                <label class="block text-sm font-semibold text-slate-300 mb-2">Select Your Vehicle</label>
+                <div class="relative" id="customCarSelectContainer">
+                    <button id="carSelectBtn" class="w-full bg-slate-800 border border-slate-600 text-slate-200 text-sm rounded-xl focus:ring-emerald-500 focus:border-emerald-500 block p-4 text-left shadow-inner flex justify-between items-center transition-colors">
+                        <span id="carSelectText">Choose a car...</span>
+                        <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </button>
+                    <!-- Custom Car Dropdown -->
+                    <ul id="carSelectList" class="absolute hidden w-full mt-2 bg-slate-800 border border-slate-600 rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.8)] max-h-60 overflow-y-auto custom-scrollbar z-[999]">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+            </div>
+
+            <div class="mt-auto relative pb-4">
+                <button onclick="startLoading()" class="btn-super-animated w-full px-6 py-4 rounded-2xl flex items-center justify-center space-x-2 transition-transform active:scale-95">
+                    <span class="text-white font-bold text-lg tracking-wide z-10">START TRACKING</span>
+                    <svg class="w-5 h-5 text-emerald-400 z-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                </button>
+            </div>
+        </main>
+
+        <!-- Screen 2: Loading -->
+        <main id="screen-loading" class="screen hide-screen flex-1 flex flex-col justify-center items-center px-6">
+            <div class="relative w-24 h-24 mb-6 transition-transform transform hover:scale-110">
+                <div class="absolute inset-0 rounded-full border-t-4 border-emerald-500 animate-spin-slow"></div>
+                <div class="absolute inset-2 rounded-full border-r-4 border-cyan-500 animate-spin-slow" style="animation-direction: reverse; animation-duration: 2s;"></div>
+                <div class="absolute inset-4 rounded-full border-b-4 border-blue-500 animate-spin-slow" style="animation-duration: 1.5s;"></div>
+                <svg class="absolute inset-0 m-auto w-8 h-8 text-slate-300 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path></svg>
+            </div>
+            <h2 class="loading-text text-xl font-bold text-slate-100 mb-2">Initializing GPS...</h2>
+            <p class="loading-text text-slate-400 text-sm font-medium text-center">Crunching numbers offline, hang tight...</p>
+        </main>
+
+        <!-- Screen 3: Active Tracking & Destination Search -->
+        <main id="screen-tracking" class="screen hide-screen flex-1 flex flex-col h-full w-full">
+            
+            <!-- Floating Top Bar (Back Button + Destination Search) -->
+            <div class="absolute top-24 left-4 right-4 z-[400] transition-all flex items-center gap-3">
+                
+                <!-- Back Button from Tracking -->
+                <button onclick="stopTrackingAndGoBack()" class="w-12 h-12 shrink-0 bg-slate-800/90 backdrop-blur-md border border-slate-600 text-slate-300 hover:text-white rounded-2xl flex items-center justify-center shadow-2xl transition-all active:scale-90">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                </button>
+
+                <!-- Search Input -->
+                <div class="relative flex-1">
+                    <input type="text" id="destInput" placeholder="Where are we going?" class="w-full bg-slate-800/90 backdrop-blur-md border border-slate-600 text-white placeholder-slate-400 text-sm rounded-2xl focus:ring-emerald-500 focus:border-emerald-500 block py-3.5 pl-10 pr-4 outline-none shadow-2xl transition-all" autocomplete="off" oninput="showRecommendations(this.value)">
+                    <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                        <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path></svg>
+                    </div>
+                    <!-- Custom Recommendations Dropdown -->
+                    <ul id="destRecommendations" class="absolute hidden w-full mt-2 bg-slate-800/95 backdrop-blur-md border border-slate-600 rounded-xl shadow-2xl max-h-48 overflow-y-auto custom-scrollbar">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Map Container -->
+            <div class="flex-1 relative bg-slate-800 h-full w-full">
+                <!-- Custom Leaflet Map -->
+                <div id="mapFrame" class="w-full h-full z-10"></div>
+                
+                <!-- Overlay Stats -->
+                <div class="absolute bottom-6 left-4 right-4 glass-panel rounded-2xl p-4 shadow-2xl z-[400] transition-transform duration-500">
+                    <div class="flex justify-between items-center border-b border-slate-600/50 pb-3 mb-3">
+                        <div>
+                            <p class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Vehicle</p>
+                            <p id="activeCarName" class="text-sm font-semibold text-emerald-300 truncate w-48 transition-all">Car Name</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Efficiency</p>
+                            <p id="activeMpg" class="text-sm font-semibold text-white transition-all"><span id="mpgVal">0</span> MPG</p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex justify-between items-end">
+                        <div class="flex-1">
+                            <p class="text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-1">Miles Driven</p>
+                            <div class="flex items-baseline space-x-1">
+                                <span id="milesTraveled" class="text-3xl font-extrabold text-white transition-all duration-300">0.00</span>
+                                <span class="text-sm text-slate-400">mi</span>
+                            </div>
+                        </div>
+                        
+                        <div class="w-[2px] h-10 bg-slate-700 mx-4"></div>
+                        
+                        <div class="flex-1 text-right">
+                            <p class="text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-1">Fuel Remaining</p>
+                            <div class="flex items-baseline justify-end space-x-1">
+                                <span id="fuelRemaining" class="text-3xl font-extrabold text-cyan-400 transition-colors duration-300">50</span>
+                                <span class="text-sm text-cyan-400 transition-colors duration-300">%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+    </div>
+
+    <script>
+        // --- PWA OFFLINE SERVICE WORKER ---
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('service-worker.js')
+            .then(() => console.log('Service Worker Registered'))
+            .catch(err => console.log('SW init error', err));
+        }
+
+        // --- DATA ---
+        const carData = {
+            "NISSAN": [
+                { name: "2010 Nissan Altima S (2.5L)", mpg: 24 },
+                { name: "2010 Nissan Altima SR (3.5L V6)", mpg: 22 },
+                { name: "2011 Nissan Altima S (2.5L)", mpg: 26 },
+                { name: "2011 Nissan Altima SL (2.5L)", mpg: 24 },
+                { name: "2011 Nissan Altima SR (3.5L V6)", mpg: 23 },
+                { name: "2012 Nissan Altima 2.5 S/SL", mpg: 26 },
+                { name: "2012 Nissan Altima 3.5 SR (V6)", mpg: 23 },
+                { name: "2013-2018 Nissan Altima 2.5 S/SV/SL", mpg: 31 },
+                { name: "2013-2015 Nissan Altima 3.5 SL", mpg: 27 },
+                { name: "2016-2018 Nissan Altima 3.5 SR/SL", mpg: 26 },
+                { name: "2012 Nissan Sentra 2.0 S/SR/SL", mpg: 28 },
+                { name: "2013-2014 Nissan Sentra 1.8 S/SV/SR/SL", mpg: 34 },
+                { name: "2015-2018 Nissan Sentra 1.8 S/SV/SR/SL", mpg: 33 },
+                { name: "2017-2018 Nissan Sentra 1.6 Turbo", mpg: 29 },
+                { name: "2025 Nissan Rogue S", mpg: 33 },
+                { name: "2025 Nissan Rogue SV", mpg: 33 },
+                { name: "2025 Nissan Rogue SL", mpg: 32 },
+                { name: "2025 Nissan Rogue Platinum", mpg: 31.5 },
+                { name: "2025 Nissan Kicks S", mpg: 31 },
+                { name: "2025 Nissan Kicks SV", mpg: 30 },
+                { name: "2025 Nissan Kicks SR AWD", mpg: 30 }
+            ],
+            "TOYOTA": [
+                { name: "2010 Corolla LE", mpg: 29 },
+                { name: "2015 Corolla S", mpg: 32 },
+                { name: "2020 Corolla SE", mpg: 34 },
+                { name: "2023 Corolla Hybrid LE", mpg: 50 },
+                { name: "2010 Camry LE", mpg: 26 },
+                { name: "2018 Camry SE", mpg: 32 },
+                { name: "2022 Camry XSE V6", mpg: 26 },
+                { name: "2023 Camry Hybrid", mpg: 52 }
+            ],
+            "FORD": [
+                { name: "2010 F-150 XL V8", mpg: 17 },
+                { name: "2018 F-150 XLT EcoBoost", mpg: 22 },
+                { name: "2022 F-150 Hybrid", mpg: 25 },
+                { name: "2015 Mustang EcoBoost", mpg: 25 },
+                { name: "2020 Mustang GT V8", mpg: 19 }
+            ],
+            "CHEVROLET": [
+                { name: "2010 Malibu LS", mpg: 26 },
+                { name: "2018 Malibu LT", mpg: 32 },
+                { name: "2015 Silverado 1500 LT", mpg: 20 },
+                { name: "2022 Silverado Diesel", mpg: 27 }
+            ]
+        };
+
+        // --- STATE ---
+        let currentFuelPct = 50;
+        let selectedCarMpg = 0;
+        let selectedCarName = "";
+        let watchId = null;
+        let lastCoords = null;
+        let totalMiles = 0;
+        const TANK_CAPACITY_GAL = 14; 
+
+        // --- INIT ---
+        document.addEventListener('DOMContentLoaded', () => {
+            const carList = document.getElementById('carSelectList');
+            const carBtn = document.getElementById('carSelectBtn');
+            const carSelectText = document.getElementById('carSelectText');
+
+            // Populate custom dropdown
+            for (const make in carData) {
+                const groupTitle = document.createElement('li');
+                groupTitle.className = "px-4 py-2 bg-slate-900 text-emerald-400 font-bold text-xs uppercase tracking-wider sticky top-0 z-10";
+                groupTitle.textContent = `🚗 ${make}`;
+                carList.appendChild(groupTitle);
+
+                carData[make].forEach(car => {
+                    const item = document.createElement('li');
+                    item.className = "px-4 py-3 text-slate-200 text-sm hover:bg-slate-700 cursor-pointer border-b border-slate-700/50 last:border-0 transition-colors";
+                    item.textContent = car.name;
+                    item.onclick = () => {
+                        selectedCarMpg = car.mpg;
+                        selectedCarName = car.name;
+                        carSelectText.textContent = car.name;
+                        carList.classList.add('hidden');
+                    };
+                    carList.appendChild(item);
+                });
+            }
+
+            carBtn.addEventListener('click', () => {
+                carList.classList.toggle('hidden');
+            });
+
+            document.addEventListener('click', (e) => {
+                if (!document.getElementById('customCarSelectContainer').contains(e.target)) {
+                    carList.classList.add('hidden');
+                }
+                if (e.target.id !== 'destInput') {
+                    document.getElementById('destRecommendations').classList.add('hidden');
+                }
+            });
+
+            updateFuelVisual(50, 'init');
+        });
+
+        // --- FUEL GAUGE LOGIC ---
+        function updateFuelVisual(val, source) {
+            let parsedVal = parseFloat(val);
+            if (isNaN(parsedVal)) parsedVal = 0;
+            if (parsedVal > 100) parsedVal = 100;
+            if (parsedVal < 0) parsedVal = 0;
+            
+            currentFuelPct = parsedVal;
+            
+            if (source !== 'text') document.getElementById('fuelInputText').value = Math.round(currentFuelPct);
+            if (source !== 'slider') document.getElementById('fuelInput').value = Math.round(currentFuelPct);
+            
+            const fillPath = document.getElementById('gaugeFill');
+            const maxDashArray = 251.2; 
+            const dashOffset = maxDashArray - (maxDashArray * (currentFuelPct / 100));
+            fillPath.style.strokeDashoffset = dashOffset;
+
+            if (currentFuelPct > 60) fillPath.style.stroke = "#10b981"; 
+            else if (currentFuelPct > 25) fillPath.style.stroke = "#eab308"; 
+            else fillPath.style.stroke = "#ef4444"; 
+        }
+
+        // --- NAVIGATION & MAP LOGIC (SILKY SMOOTH) ---
+        function switchScreen(hideId, showId) {
+            const hideEl = document.getElementById(hideId);
+            const showEl = document.getElementById(showId);
+            
+            hideEl.classList.remove('active-screen');
+            hideEl.classList.add('hide-screen');
+            
+            showEl.classList.remove('hide-screen');
+            showEl.classList.add('active-screen');
+
+            // Tell Leaflet map to resize properly if it un-hides
+            if (showId === 'screen-tracking' && map) {
+                setTimeout(() => map.invalidateSize(), 500);
+            }
+        }
+
+        function startLoading() {
+            if (!selectedCarName) {
+                alert("Please select your vehicle first!");
+                return;
+            }
+
+            switchScreen('screen-setup-car', 'screen-loading');
+            
+            if ("geolocation" in navigator) {
+                navigator.geolocation.getCurrentPosition(
+                    pos => {
+                        lastCoords = pos.coords;
+                        finishLoading();
+                    },
+                    err => {
+                        console.warn("GPS init error", err);
+                        finishLoading();
+                    },
+                    { enableHighAccuracy: true, timeout: 5000 }
+                );
+            } else {
+                finishLoading();
+            }
+        }
+
+        function finishLoading() {
+            setTimeout(() => {
+                document.getElementById('activeCarName').textContent = selectedCarName;
+                document.getElementById('mpgVal').textContent = selectedCarMpg;
+                document.getElementById('fuelRemaining').textContent = Math.round(currentFuelPct);
+                document.getElementById('milesTraveled').textContent = "0.00";
+
+                switchScreen('screen-loading', 'screen-tracking');
+                initMapAndTracking();
+            }, 1800);
+        }
+
+        function stopTrackingAndGoBack() {
+            if (watchId) {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+            }
+            switchScreen('screen-tracking', 'screen-setup-car');
+        }
+
+        // --- WORLDWIDE DESTINATION SEARCH (NOMINATIM API) ---
+        let destMarker = null;
+        let routeLine = null;
+
+        async function showRecommendations(val) {
+            const list = document.getElementById('destRecommendations');
+            list.innerHTML = '';
+            if (!val || val.length < 3) {
+                list.classList.add('hidden');
+                return;
+            }
+            
+            if (!navigator.onLine) {
+                list.classList.remove('hidden');
+                const li = document.createElement('li');
+                li.className = "px-4 py-3 text-slate-400 text-sm font-medium border-b border-slate-700/50";
+                li.textContent = "Offline Mode: Cannot search destinations right now.";
+                list.appendChild(li);
+                return;
+            }
+            
+            try {
+                const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(val)}&format=json&addressdetails=1&limit=5&accept-language=en`);
+                const matches = await res.json();
+                
+                if (matches.length > 0) {
+                    list.classList.remove('hidden');
+                    matches.forEach(match => {
+                        const li = document.createElement('li');
+                        li.className = "px-4 py-3 text-slate-200 text-sm hover:bg-slate-700 cursor-pointer border-b border-slate-700/50 flex flex-col transition-colors";
+                        
+                        const mainText = match.name || match.display_name.split(',')[0];
+                        const subText = match.display_name;
+                        
+                        li.innerHTML = `
+                            <div class="flex items-center">
+                                <svg class="w-4 h-4 mr-2 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path></svg> 
+                                <span class="font-bold truncate">${mainText}</span>
+                            </div>
+                            <span class="text-xs text-slate-400 truncate pl-6 mt-1">${subText}</span>
+                        `;
+                        
+                        li.onclick = () => {
+                            document.getElementById('destInput').value = mainText;
+                            list.classList.add('hidden');
+                            setDestinationOnMap(match.lat, match.lon, mainText);
+                        };
+                        list.appendChild(li);
+                    });
+                } else {
+                    list.classList.add('hidden');
+                }
+            } catch (e) {
+                console.error("Search error", e);
+            }
+        }
+
+        function setDestinationOnMap(lat, lng, name) {
+            if (!map) return;
+            if (destMarker) map.removeLayer(destMarker);
+            if (routeLine) map.removeLayer(routeLine);
+            
+            destMarker = L.marker([lat, lng]).addTo(map).bindPopup(name).openPopup();
+            
+            if (lastCoords) {
+                routeLine = L.polyline([[lastCoords.latitude, lastCoords.longitude], [lat, lng]], {
+                    color: '#10b981', 
+                    weight: 3,
+                    dashArray: '10, 10'
+                }).addTo(map);
+                map.fitBounds(routeLine.getBounds(), {padding: [50, 50]});
+            } else {
+                map.setView([lat, lng], 14);
+            }
+        }
+
+        // --- NO-ITALICS 3D CAR MARKERS GENERATOR ---
+        function get3DCarMarker(carName) {
+            let type = 'sedan';
+            const n = carName.toLowerCase();
+            if (n.includes('rogue') || n.includes('kicks') || n.includes('f-150') || n.includes('silverado')) type = 'suv';
+            if (n.includes('mustang')) type = 'sports';
+
+            let svg = '';
+            // Nice smooth top-down 2D representations with dropshadow (NO ROTATION SKEW!)
+            if (type === 'suv') {
+                svg = `<svg viewBox="0 0 100 200" class="drop-shadow-[0_10px_20px_rgba(0,0,0,0.6)]"><rect x="15" y="10" width="70" height="180" rx="15" fill="#3b82f6"/><rect x="20" y="40" width="60" height="40" rx="5" fill="#1e293b"/><rect x="20" y="120" width="60" height="50" rx="5" fill="#1e293b"/></svg>`;
+            } else if (type === 'sports') {
+                svg = `<svg viewBox="0 0 100 200" class="drop-shadow-[0_10px_20px_rgba(0,0,0,0.6)]"><path d="M20 20 L80 20 L90 180 L10 180 Z" fill="#ef4444"/><rect x="30" y="60" width="40" height="30" rx="5" fill="#1e293b"/><rect x="35" y="130" width="30" height="30" rx="5" fill="#1e293b"/></svg>`;
+            } else {
+                // Sedan (Altima, Camry, Sentra, etc)
+                svg = `<svg viewBox="0 0 100 200" class="drop-shadow-[0_10px_20px_rgba(0,0,0,0.6)]"><rect x="20" y="10" width="60" height="180" rx="20" fill="#10b981"/><rect x="25" y="50" width="50" height="35" rx="5" fill="#1e293b"/><rect x="25" y="120" width="50" height="35" rx="5" fill="#1e293b"/></svg>`;
+            }
+            
+            return `<div class="w-12 h-24 pointer-events-none transition-transform duration-1000">${svg}</div>`;
+        }
+
+        // --- MAP OVERLAY & REAL GEOLOCATION TRACKING ---
+        let map = null;
+        let userMarker = null;
+
+        function initMapAndTracking() {
+            if (map) return; // Map already initialized
+            const lat = lastCoords ? lastCoords.latitude : 25.4052;
+            const lng = lastCoords ? lastCoords.longitude : 55.4415;
+
+            map = L.map('mapFrame', { zoomControl: false, attributionControl: false }).setView([lat, lng], 16);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                maxZoom: 19
+            }).addTo(map);
+
+            const customIcon = L.divIcon({ html: get3DCarMarker(selectedCarName), className: 'bg-transparent', iconSize: [48, 96], iconAnchor: [24, 48] });
+            userMarker = L.marker([lat, lng], { icon: customIcon }).addTo(map);
+
+            startLocationTracking();
+        }
+
+        function startLocationTracking() {
+            if ("geolocation" in navigator && !watchId) {
+                watchId = navigator.geolocation.watchPosition(
+                    position => processNewLocation(position.coords),
+                    err => console.warn("GPS tracking error.", err),
+                    { enableHighAccuracy: true, maximumAge: 0 }
+                );
+            }
+        }
+
+        function processNewLocation(coords) {
+            if (!lastCoords) {
+                lastCoords = coords;
+                if(map) {
+                    map.setView([coords.latitude, coords.longitude], 16, { animate: true, duration: 1 });
+                    userMarker.setLatLng([coords.latitude, coords.longitude]);
+                }
+                return;
+            }
+
+            const dist = calculateMiles(lastCoords.latitude, lastCoords.longitude, coords.latitude, coords.longitude);
+            if (dist > 0.005) { 
+                addDistance(dist);
+                lastCoords = coords;
+                if(map) {
+                    map.panTo([coords.latitude, coords.longitude], { animate: true, duration: 1 });
+                    userMarker.setLatLng([coords.latitude, coords.longitude]);
+                }
+            }
+        }
+
+        function addDistance(miles) {
+            totalMiles += miles;
+            document.getElementById('milesTraveled').textContent = totalMiles.toFixed(2);
+
+            const gallonsUsed = miles / selectedCarMpg;
+            const pctDrop = (gallonsUsed / TANK_CAPACITY_GAL) * 100;
+            
+            currentFuelPct = Math.max(0, currentFuelPct - pctDrop);
+            
+            const fuelEl = document.getElementById('fuelRemaining');
+            fuelEl.textContent = Math.round(currentFuelPct);
+            
+            if (currentFuelPct < 15) {
+                fuelEl.classList.remove('text-cyan-400');
+                fuelEl.classList.add('text-red-500', 'animate-pulse');
+            }
+        }
+
+        function calculateMiles(lat1, lon1, lat2, lon2) {
+            const R = 3958.8;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+    </script>
+</body>
+</html>
