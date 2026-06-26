@@ -5,8 +5,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Discord developer credentials
-const CLIENT_ID = "1520131764532809728";
-const CLIENT_SECRET = "5Zmt5S7dC5QoT7gHMqqpY7ft0A9bSs9p";
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const REDIRECT_URI = "https://feoservices.site/auth/discord/callback";
 
 // Configure CORS specifically to authorize your frontend workstation and permit headers
